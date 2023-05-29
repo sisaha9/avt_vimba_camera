@@ -837,9 +837,14 @@ void AvtVimbaCamera::updateAcquisitionConfig(Config& config)
   {
     configureFeature("AcquisitionMode", config.acquisition_mode, config.acquisition_mode);
   }
+  if (config.acquisition_rate_enable != config_.acquisition_rate_enable || on_init_)
+  {
+    configureFeature("AcquisitionFrameRateEnable", static_cast<bool>(config.acquisition_rate_enable), config.acquisition_rate_enable); 
+  }
   if (config.acquisition_rate != config_.acquisition_rate || on_init_)
   {
     configureFeature("AcquisitionFrameRateAbs", static_cast<float>(config.acquisition_rate), config.acquisition_rate);
+    configureFeature("AcquisitionFrameRate", static_cast<float>(config.acquisition_rate), config.acquisition_rate); // NEW  CAMERAS USE THIS PARAMETER
   }
   if (config.trigger_mode != config_.trigger_mode || on_init_)
   {

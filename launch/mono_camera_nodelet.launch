@@ -14,6 +14,7 @@
   <!-- Acquisition -->
   <arg name="acquisition_mode" default="Continuous"/>
   <arg name="acquisition_rate" default="10"/>
+  <arg name="acquisition_rate_enable" default="False"/>
   <!-- Trigger -->
   <arg name="trigger_source" default="FixedRate"/>
   <arg name="trigger_mode" default="On"/>
@@ -93,6 +94,7 @@
 
     <param name="acquisition_mode" value="$(arg acquisition_mode)"/>
     <param name="acquisition_rate" value="$(arg acquisition_rate)"/>
+    <param name="acquisition_rate_enable" value="$(arg acquisition_rate_enable)"/>
 
     <param name="trigger_source" value="$(arg trigger_source)"/>
     <param name="trigger_mode" value="$(arg trigger_mode)"/>
