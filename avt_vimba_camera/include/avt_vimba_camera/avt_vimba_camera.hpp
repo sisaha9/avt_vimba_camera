@@ -34,17 +34,14 @@
 #define AVT_VIMBA_CAMERA_H
 
 #include <VimbaCPP/Include/VimbaCPP.h>
+#include <yaml-cpp/node/node.h>
 
 #include "avt_vimba_camera/frame_observer.hpp"
 #include "avt_vimba_camera/avt_vimba_api.hpp"
 
-#include <diagnostic_updater/diagnostic_updater.hpp>
-#include <diagnostic_updater/publisher.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
-#include <camera_info_manager/camera_info_manager.hpp>
-
 #include <string>
 #include <mutex>
+#include <set>
 
 using AVT::VmbAPI::CameraPtr;
 using AVT::VmbAPI::FramePtr;
@@ -71,14 +68,14 @@ class AvtVimbaCamera
 public:
   typedef std::function<void(const FramePtr)> frameCallbackFunc;
 
-  // AvtVimbaCamera(rclcpp::Node* owner_node);
-  AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node);
+  AvtVimbaCamera();
   void start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
              const std::string& camera_info_url);
   void stop();
   void initConfig();
   void startImaging();
   void stopImaging();
+  bool setParams(const YAML::Node& params);
 
   bool loadCameraSettings(const std::string& filename);
   bool saveCameraSettings(const std::string& filename);
@@ -100,7 +97,6 @@ public:
   int getSensorHeight();
   int getBinningOrDecimationX();
   int getBinningOrDecimationY();
-  sensor_msgs::msg::CameraInfo getCameraInfo();
 
   // Setters
   void setCallback(frameCallbackFunc callback)
@@ -113,8 +109,6 @@ public:
   }
 
 private:
-  rclcpp::Node::SharedPtr nh_;
-  rclcpp::Clock clock_;
   AvtVimbaApi api_;
 
   // IFrame Observer
@@ -140,11 +134,6 @@ private:
   std::map<std::string, bool> writable_features_;
   std::set<std::string> cam_info_features_;
 
-  std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
-  diagnostic_updater::Updater updater_;
-  std::string diagnostic_msg_;
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_sub_;
-
   CameraPtr openCamera(const std::string& id_str);
 
   frameCallbackFunc userFrameCallback;
@@ -155,14 +144,10 @@ private:
   template <typename T>
   bool getFeatureValue(const std::string& feature_str, T& val);
   bool getFeatureValue(const std::string& feature_str, std::string& val);
-  template <typename Vimba_Type, typename Std_Type>
-  void configureFeature(const std::string& feature_str, const Vimba_Type& val_in, Std_Type& val_out);
-  void configureFeature(const std::string& feature_str, const std::string& val_in, std::string& val_out);
+  template <typename Vimba_Type>
+  void configureFeature(const std::string& feature_str, const Vimba_Type& val_in);
+  void configureFeature(const std::string& feature_str, const std::string& val_in);
   bool runCommand(const std::string& command_str);
-  bool createParamFromFeature(const FeaturePtr feature, std::string& feature_name, bool& is_writable);
-  rcl_interfaces::msg::SetParametersResult parameterCallback(const std::vector<rclcpp::Parameter>& parameters);
-  void updateCameraInfo();
-  void getCurrentState(diagnostic_updater::DiagnosticStatusWrapper& stat);
 };
 }  // namespace avt_vimba_camera
 #endif

@@ -34,36 +34,23 @@
 #include "VimbaC/Include/VimbaC.h"
 #include "avt_vimba_camera/avt_vimba_api.hpp"
 
-#include <rclcpp/rclcpp.hpp>
-#include <diagnostic_msgs/msg/diagnostic_status.hpp>
-
 #include <signal.h>
+#include <yaml-cpp/yaml.h>
+#include <thread>
 
 namespace avt_vimba_camera
 {
 static volatile int keepRunning = 1;
 
-AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node)
-  : nh_(owner_node), api_(owner_node->get_logger()), updater_(owner_node)
+AvtVimbaCamera::AvtVimbaCamera()
+  : api_()
 {
-  clock_ = rclcpp::Clock(RCL_ROS_TIME);
   opened_ = false;     // camera connected to the api
   streaming_ = false;  // capturing frames
   on_init_ = true;     // on initialization phase
   on_init_config_ = false;
   force_stopped_ = false;
   camera_state_ = OPENING;
-
-  // Features that affect the camera_info parameters
-  cam_info_features_.emplace("Width");
-  cam_info_features_.emplace("Height");
-  cam_info_features_.emplace("BinningHorizontal");
-  cam_info_features_.emplace("BinningVertical");
-  cam_info_features_.emplace("DecimationHorizontal");
-  cam_info_features_.emplace("DecimationVertical");
-
-  updater_.setHardwareID("unknown");
-  updater_.add(owner_node->get_name(), this, &AvtVimbaCamera::getCurrentState);
 }
 
 void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
@@ -73,22 +60,18 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
     return;
 
   frame_id_ = frame_id;
-  info_man_ = std::shared_ptr<camera_info_manager::CameraInfoManager>(
-      new camera_info_manager::CameraInfoManager(nh_.get(), frame_id, camera_info_url));
-  updater_.broadcast(0, "Starting device with IP:" + ip_str + " or GUID:" + guid_str);
+  spdlog::get("console")->info("Starting device with IP: {} or GUID: {}", ip_str, guid_str);
 
   // Determine which camera to use. Try IP first
   if (!ip_str.empty())
   {
-    diagnostic_msg_ = "Trying to open camera by IP: " + ip_str;
-    RCLCPP_INFO_STREAM(nh_->get_logger(), "Trying to open camera by IP: " << ip_str);
+    spdlog::get("console")->info("Trying to open camera by IP: {}", ip_str);
     vimba_camera_ptr_ = openCamera(ip_str);
     if (!vimba_camera_ptr_)
     {
-      RCLCPP_WARN(nh_->get_logger(), "Camera pointer is empty. Returning...");
+      spdlog::get("console")->warn("Camera pointer is empty. Returning...");
       return;
     }
-    updater_.setHardwareID(ip_str);
     guid_ = ip_str;
     // If both guid and IP are available, open by IP and check guid
     if (!guid_str.empty())
@@ -97,33 +80,27 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
       vimba_camera_ptr_->GetSerialNumber(cam_guid_str);
       if (!vimba_camera_ptr_)
       {
-        RCLCPP_WARN(nh_->get_logger(), "Camera pointer is empty. Returning...");
+        spdlog::get("console")->warn("Camera pointer is empty. Returning...");
         return;
       }
       assert(cam_guid_str == guid_str);
-      updater_.setHardwareID(guid_str);
       guid_ = guid_str;
-      diagnostic_msg_ = "GUID " + cam_guid_str + " matches for camera with IP: " + ip_str;
-      RCLCPP_INFO_STREAM(nh_->get_logger(), "GUID " << cam_guid_str << " matches for camera with IP: " << ip_str);
+      spdlog::get("console")->info("GUID {} matches for camera with IP: {}", cam_guid_str, ip_str);
     }
   }
   else if (!guid_str.empty())
   {
     // Only guid available
-    diagnostic_msg_ = "Trying to open camera by ID: " + guid_str;
-    RCLCPP_INFO_STREAM(nh_->get_logger(), "Trying to open camera by ID: " << guid_str);
+    spdlog::get("console")->info("Trying to open camera by ID: {}", guid_str);
     vimba_camera_ptr_ = openCamera(guid_str);
-    updater_.setHardwareID(guid_str);
     guid_ = guid_str;
   }
   else
   {
     // No identifying info (GUID and IP) are available
-    diagnostic_msg_ = "Can't connect to the camera: at least GUID or IP need to be set.";
-    RCLCPP_ERROR(nh_->get_logger(), "Can't connect to the camera: at least GUID or IP need to be set.");
+    spdlog::get("console")->error("Can't connect to the camera: at least GUID or IP need to be set.");
     camera_state_ = ERROR;
   }
-  updater_.force_update();
 
   getFeatureValue("GevTimestampTickFrequency", vimba_timestamp_tick_freq_);
 
@@ -142,11 +119,8 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
   SP_SET(frame_obs_ptr_,
           new FrameObserver(vimba_camera_ptr_,
                             std::bind(&avt_vimba_camera::AvtVimbaCamera::frameCallback, this, std::placeholders::_1)));
-  RCLCPP_INFO(nh_->get_logger(), "Ready to receive frames triggered by %s", trigger_source.c_str());
+  spdlog::get("console")->info("Ready to receive frames triggered by {}", trigger_source);
   camera_state_ = IDLE;
-
-  updater_.force_update();
-
   initConfig();
 }
 
@@ -166,24 +140,21 @@ void AvtVimbaCamera::startImaging()
     VmbErrorType err = vimba_camera_ptr_->StartContinuousImageAcquisition(3, IFrameObserverPtr(frame_obs_ptr_));
     if (err == VmbErrorSuccess)
     {
-      diagnostic_msg_ = "Starting continuous image acquisition";
-      RCLCPP_INFO_STREAM(nh_->get_logger(), "Starting continuous image acquisition ...");
+      spdlog::get("console")->info("Starting continuous image acquisition ...");
       streaming_ = true;
       camera_state_ = OK;
     }
     else
     {
-      diagnostic_msg_ = "Could not start continuous image acquisition. Error: " + api_.errorCodeToMessage(err);
-      RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not start continuous image acquisition. "
-                                                 << "\n Error: " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->error("Could not start continuous image acquisition. Error: {}",
+                                    api_.errorCodeToMessage(err));
       camera_state_ = ERROR;
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Start imaging called, but the camera is already imaging.");
+    spdlog::get("console")->warn("Start imaging called, but the camera is already imaging.");
   }
-  updater_.force_update();
 }
 
 void AvtVimbaCamera::stopImaging()
@@ -193,24 +164,20 @@ void AvtVimbaCamera::stopImaging()
     VmbErrorType err = vimba_camera_ptr_->StopContinuousImageAcquisition();
     if (err == VmbErrorSuccess)
     {
-      diagnostic_msg_ = "Acquisition stopped";
-      RCLCPP_INFO_STREAM(nh_->get_logger(), "Acquisition stoppped ...");
+      spdlog::get("console")->info("Acquisition stoppped ...");
       streaming_ = false;
       camera_state_ = IDLE;
     }
     else
     {
-      diagnostic_msg_ = "Could not stop image acquisition. Error: " + api_.errorCodeToMessage(err);
-      RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not stop image acquisition."
-                                                 << "\n Error: " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->error("Could not stop image acquisition. Error: {}", api_.errorCodeToMessage(err));
       camera_state_ = ERROR;
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Stop imaging called, but the camera is already stopped.");
+    spdlog::get("console")->warn("Stop imaging called, but the camera is already stopped.");
   }
-  updater_.force_update();
 }
 
 CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
@@ -229,15 +196,14 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
   {
     if (keepRunning)
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(),
-                         "Could not find camera using " << id_str << ". Retrying every two seconds ...");
+      spdlog::get("console")->warn("Could not find camera using {}. Retrying every two seconds ...", id_str);
       std::this_thread::sleep_for(std::chrono::milliseconds(2000));
       err = vimba_system.GetCameraByID(id_str.c_str(), camera);
     }
     else
     {
-      RCLCPP_ERROR_STREAM(nh_->get_logger(),
-                          "Could not find camera using " << id_str << "\n Error: " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->error("Could not find camera using {}. Error: {}", id_str,
+                                    api_.errorCodeToMessage(err));
       camera_state_ = CAMERA_NOT_FOUND;
       return camera;
     }
@@ -249,14 +215,13 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
   {
     if (keepRunning)
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), "Could not open camera. Retrying every two seconds ...");
+      spdlog::get("console")->warn("Could not open camera. Retrying every two seconds ...");
       err = camera->Open(VmbAccessModeFull);
       std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     }
     else
     {
-      RCLCPP_ERROR_STREAM(nh_->get_logger(),
-                          "Could not open camera " << id_str << "\n Error: " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->error("Could not open camera. Error: {}", api_.errorCodeToMessage(err));
       camera_state_ = CAMERA_NOT_FOUND;
       return camera;
     }
@@ -265,7 +230,7 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
   std::string cam_id, cam_name;
   camera->GetID(cam_id);
   camera->GetName(cam_name);
-  RCLCPP_INFO_STREAM(nh_->get_logger(), "Opened connection to camera named " << cam_name << " with ID " << cam_id);
+  spdlog::get("console")->info("Opened connection to camera named {} with ID {}", cam_name, cam_id);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
@@ -278,7 +243,6 @@ void AvtVimbaCamera::frameCallback(const FramePtr vimba_frame_ptr)
 {
   std::unique_lock<std::mutex> lock(config_mutex_);
   camera_state_ = OK;
-  diagnostic_msg_ = "Camera operating normally";
 
   // Call the callback implemented by other classes
   std::thread thread_callback = std::thread(userFrameCallback, vimba_frame_ptr);
@@ -361,11 +325,6 @@ int AvtVimbaCamera::getBinningOrDecimationY()
   return std::max(binning, decimation);
 }
 
-sensor_msgs::msg::CameraInfo AvtVimbaCamera::getCameraInfo()
-{
-  return info_man_->getCameraInfo();
-}
-
 double AvtVimbaCamera::getTimestampRealTime(VmbUint64_t timestamp_ticks)
 {
   return (static_cast<double>(timestamp_ticks)) / (static_cast<double>(vimba_timestamp_tick_freq_));
@@ -386,7 +345,7 @@ VmbErrorType AvtVimbaCamera::setFeatureValue(const std::string& feature_str, con
     {
       if (writable)
       {
-        RCLCPP_DEBUG_STREAM(nh_->get_logger(), "Setting feature " << feature_str << " value " << val);
+        spdlog::get("console")->debug("Setting feature {} value {}", feature_str, val);
         VmbFeatureDataType data_type;
         err = vimba_feature_ptr->GetDataType(data_type);
         if (err == VmbErrorSuccess)
@@ -403,13 +362,12 @@ VmbErrorType AvtVimbaCamera::setFeatureValue(const std::string& feature_str, con
               }
               else
               {
-                RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << " is available now.");
+                spdlog::get("console")->warn("Feature {} is available now", feature_str);
               }
             }
             else
             {
-              RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << ": value unavailable\n\tERROR "
-                                                               << api_.errorCodeToMessage(err));
+              spdlog::get("console")->warn("Feature: value unavailable\n\tERROR {}", feature_str, api_.errorCodeToMessage(err));
             }
           }
           else
@@ -419,24 +377,22 @@ VmbErrorType AvtVimbaCamera::setFeatureValue(const std::string& feature_str, con
         }
         else
         {
-          RCLCPP_WARN_STREAM(nh_->get_logger(),
-                             "Feature " << feature_str << ": Bad data type\n\tERROR " << api_.errorCodeToMessage(err));
+          spdlog::get("console")->warn("Feature {}: Bad data type\n\tERROR {}", feature_str, api_.errorCodeToMessage(err));
         }
       }
       else
       {
-        RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << " is not writable.");
+        spdlog::get("console")->warn("Feature {} is not writable.", feature_str);
       }
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << ": ERROR " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->warn("Feature {}: ERROR {}", feature_str, api_.errorCodeToMessage(err));
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(),
-                       "Could not get feature " << feature_str << ", your camera probably doesn't support it.");
+    spdlog::get("console")->warn("Could not get feature {}, your camera probably doesn't support it.", feature_str);
   }
   return err;
 }
@@ -445,7 +401,7 @@ VmbErrorType AvtVimbaCamera::setFeatureValue(const std::string& feature_str, con
 template <typename T>
 bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, T& val)
 {
-  RCLCPP_DEBUG_STREAM(nh_->get_logger(), "Asking for feature " << feature_str);
+  spdlog::get("console")->debug("Asking for feature {}", feature_str);
   VmbErrorType err;
   FeaturePtr vimba_feature_ptr;
   VmbFeatureDataType data_type;
@@ -459,7 +415,7 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, T& val)
       vimba_feature_ptr->GetDataType(data_type);
       if (err != VmbErrorSuccess)
       {
-        std::cout << "[Could not get feature Data Type. Error code: " << err << "]" << std::endl;
+        spdlog::get("console")->error("[Could not get feature Data Type. Error code: {}]", err);
       }
       else
       {
@@ -494,19 +450,18 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, T& val)
         }
         if (err != VmbErrorSuccess)
         {
-          RCLCPP_WARN_STREAM(nh_->get_logger(),
-                             "Could not get feature value. Error code: " << api_.errorCodeToMessage(err));
+          spdlog::get("console")->warn("Could not get feature value. Error code: {}", api_.errorCodeToMessage(err));
         }
       }
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << " is not readable.");
+      spdlog::get("console")->warn("Feature {} is not readable.", feature_str);
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Could not get feature " << feature_str);
+    spdlog::get("console")->warn("Could not get feature {}", feature_str);
   }
   return (err == VmbErrorSuccess);
 }
@@ -514,7 +469,7 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, T& val)
 // Function to GET a feature value from the camera, overloaded to strings
 bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, std::string& val)
 {
-  RCLCPP_DEBUG_STREAM(nh_->get_logger(), "Asking for feature " << feature_str);
+  spdlog::get("console")->debug("Asking for feature {}", feature_str);
   VmbErrorType err;
   FeaturePtr vimba_feature_ptr;
   VmbFeatureDataType data_type;
@@ -528,7 +483,7 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, std::string
       vimba_feature_ptr->GetDataType(data_type);
       if (err != VmbErrorSuccess)
       {
-        RCLCPP_ERROR_STREAM(nh_->get_logger(), "[Could not get feature Data Type. Error code: " << err << "]");
+        spdlog::get("console")->error("[Could not get feature Data Type. Error code: {}]", err);
       }
       else
       {
@@ -554,27 +509,26 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, std::string
         }
         if (err != VmbErrorSuccess)
         {
-          RCLCPP_WARN_STREAM(nh_->get_logger(),
-                             "Could not get feature value. Error code: " << api_.errorCodeToMessage(err));
+          spdlog::get("console")->warn("Could not get feature value. Error code: {}", api_.errorCodeToMessage(err));
         }
       }
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), "Feature " << feature_str << " is not readable.");
+      spdlog::get("console")->warn("Feature {} is not readable.", feature_str);
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Could not get feature " << feature_str);
+    spdlog::get("console")->warn("Could not get feature {}", feature_str);
   }
   return (err == VmbErrorSuccess);
 }
 
 // Tries to configure a camera feature.
 // Updates the config value passed in if a different config is in use by the camera.
-template <typename Vimba_Type, typename Std_Type>
-void AvtVimbaCamera::configureFeature(const std::string& feature_str, const Vimba_Type& val_in, Std_Type& val_out)
+template <typename Vimba_Type>
+void AvtVimbaCamera::configureFeature(const std::string& feature_str, const Vimba_Type& val_in)
 {
   Vimba_Type actual_value;
 
@@ -584,25 +538,22 @@ void AvtVimbaCamera::configureFeature(const std::string& feature_str, const Vimb
     getFeatureValue(feature_str, actual_value);
     if (val_in == actual_value)
     {
-      RCLCPP_INFO_STREAM(nh_->get_logger(), " - " << feature_str << " set to " << actual_value);
+      spdlog::get("console")->info(" - {} set to {}", feature_str, actual_value);
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), " - Tried to set " << feature_str << " to " << val_in
-                                                               << " but the camera used " << actual_value
-                                                               << " instead");
-      val_out = static_cast<Std_Type>(actual_value);
+      spdlog::get("console")->warn(" - Tried to set {} to {} but the camera used {} instead", feature_str, val_in,
+                                   actual_value);
     }
   }
   else
   {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), " - Failed to set " << feature_str << " to " << actual_value);
-    val_out = static_cast<Std_Type>(val_in);
+    spdlog::get("console")->error(" - Failed to set {} to {}", feature_str, actual_value);
   }
 }
 
 // Overloaded for strings, template specialization doesn't currently compile with GCC
-void AvtVimbaCamera::configureFeature(const std::string& feature_str, const std::string& val_in, std::string& val_out)
+void AvtVimbaCamera::configureFeature(const std::string& feature_str, const std::string& val_in)
 {
   std::string actual_value;
 
@@ -612,20 +563,17 @@ void AvtVimbaCamera::configureFeature(const std::string& feature_str, const std:
     getFeatureValue(feature_str, actual_value);
     if (val_in == actual_value)
     {
-      RCLCPP_INFO_STREAM(nh_->get_logger(), " - " << feature_str << " set to " << actual_value);
+      spdlog::get("console")->info(" - {} set to {}", feature_str, actual_value);
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(), " - Tried to set " << feature_str << " to " << val_in
-                                                               << " but the camera used " << actual_value
-                                                               << " instead");
-      val_out = actual_value;
+      spdlog::get("console")->warn(" - Tried to set {} to {} but the camera used {} instead", feature_str, val_in,
+                                   actual_value);
     }
   }
   else
   {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), " - Failed to set " << feature_str << " to " << actual_value);
-    val_out = val_in;
+    spdlog::get("console")->error(" - Failed to set {} to {}", feature_str, actual_value);
   }
 }
 
@@ -647,369 +595,112 @@ bool AvtVimbaCamera::runCommand(const std::string& command_str)
         {
           break;
         }
-        RCLCPP_DEBUG_STREAM_THROTTLE(nh_->get_logger(), clock_, 1000,
-                                     "Waiting for command " << command_str.c_str() << "...");
+        spdlog::get("console")->debug("Waiting for command {}...", command_str);;
       } while (false == is_command_done);
-      RCLCPP_DEBUG_STREAM(nh_->get_logger(), "Command " << command_str.c_str() << " done!");
+      spdlog::get("console")->debug("Command {} done!", command_str);
       return true;
     }
     else
     {
-      RCLCPP_WARN_STREAM(nh_->get_logger(),
-                         "Could not run command " << command_str << ". Error: " << api_.errorCodeToMessage(err));
+      spdlog::get("console")->warn("Could not run command {}. Error: {}", command_str, api_.errorCodeToMessage(err));
       return false;
     }
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(),
-                       "Could not get feature command " << command_str << ". Error: " << api_.errorCodeToMessage(err));
+    spdlog::get("console")->warn("Could not get feature command {}. Error: {}", command_str,
+                                 api_.errorCodeToMessage(err));
     return false;
   }
 }
 
 void AvtVimbaCamera::initConfig()
 {
-  // Add param callback to catch any changes to params during operation
-  param_sub_ =
-      nh_->add_on_set_parameters_callback(std::bind(&AvtVimbaCamera::parameterCallback, this, std::placeholders::_1));
-
   if (!opened_)
   {
-    RCLCPP_ERROR(nh_->get_logger(), "Can't configure camera. It needs to be opened first");
+    spdlog::get("console")->error("Can't configure camera. It needs to be opened first");
     return;
   }
 
   VmbErrorType err;
   uint32_t writable_count = 0;
+  on_init_config_ = true;
+}
 
-  // Fetch all features of our cam
+
+bool AvtVimbaCamera::setParams(const YAML::Node& params)
+{
   FeaturePtrVector features;
+  VmbErrorType err;
   err = vimba_camera_ptr_->GetFeatures(features);
   if (err == VmbErrorSuccess)
   {
     on_init_config_ = true;
-    RCLCPP_INFO(nh_->get_logger(), "Configuring camera:");
-    // Query all camera features to translate into ROS params
+    spdlog::get("console")->info("Configuring camera:");
+    // Query all camera features to translate into params
     for (const FeaturePtr feature : features)
     {
       std::string feature_name = "";
       bool is_writable = false;
-      if (createParamFromFeature(feature, feature_name, is_writable))
+      err = feature->GetName(feature_name);
+      if (err != VmbErrorSuccess)
       {
-        writable_count = (is_writable) ? writable_count + 1 : writable_count;
+        spdlog::get("console")->error("[Could not get feature Name. Error code: {}]", err);
+        return false;
       }
-    }
-  }
-  else
-  {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not get features. Error code: " << api_.errorCodeToMessage(err));
-  }
-  updateCameraInfo();
 
-  RCLCPP_INFO(nh_->get_logger(),
-              "Found %d features on the camera, %u of which are writable. All features are exposed as ROS params",
-              writable_features_.size(), writable_count);
-  on_init_config_ = false;
-}
-
-bool AvtVimbaCamera::createParamFromFeature(const FeaturePtr feature, std::string& feature_name, bool& is_writable)
-{
-  VmbErrorType err;
-
-  err = feature->GetName(feature_name);
-  if (err != VmbErrorSuccess)
-  {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), "[Could not get feature Name. Error code: " << err << "]");
-    return false;
-  }
-
-  err = feature->IsWritable(is_writable);
-  if (err != VmbErrorSuccess)
-  {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), "[Could not get write access. Error code: " << err << "]");
-  }
-  writable_features_[feature_name] = is_writable;
-
-  rcl_interfaces::msg::ParameterDescriptor descriptor;
-
-  // Create description for ROS param with category and units.
-  std::string annotated_description = "";
-
-  std::string category;
-  err = feature->GetCategory(category);
-  if (err == VmbErrorSuccess && category != "")
-  {
-    annotated_description += "[" + category + "]";
-  }
-
-  std::string unit;
-  err = feature->GetUnit(unit);
-  if (err == VmbErrorSuccess && unit != "")
-  {
-    annotated_description += "(Unit: " + unit + ")";
-  }
-
-  std::string description;
-  err = feature->GetDescription(description);
-  if (err == VmbErrorSuccess)
-  {
-    annotated_description += " " + description;
-  }
-
-  descriptor.description = annotated_description;
-  descriptor.read_only = !is_writable;
-
-  // Not supported in ROS Foxy
-  // descriptor.dynamic_typing = false;
-
-  VmbFeatureDataType type;
-  err = feature->GetDataType(type);
-  if (err != VmbErrorSuccess)
-  {
-    RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not get feature Data Type. Error code: " << err);
-  }
-  else
-  {
-    switch (type)
-    {
-      case VmbFeatureDataBool: {
-        bool initial_value = false;
-
-        feature->GetValue(initial_value);
-
-        nh_->declare_parameter<bool>(PARAM_NAMESPACE + feature_name, initial_value, descriptor);
-        break;
-      }
-      case VmbFeatureDataInt: {
-        VmbInt64_t initial_value = 0;
-        VmbInt64_t minimum_value = std::numeric_limits<int64_t>::lowest();
-        VmbInt64_t maximum_value = std::numeric_limits<int64_t>::max();
-        VmbInt64_t step = 0.0;
-
-        feature->GetValue(initial_value);
-        feature->GetRange(minimum_value, maximum_value);
-        feature->GetIncrement(step);
-        initial_value = std::max(minimum_value, std::min(initial_value, maximum_value));
-
-        rcl_interfaces::msg::IntegerRange int_range;
-        int_range.from_value = minimum_value;
-        int_range.to_value = maximum_value;
-        int_range.step = step;
-        descriptor.integer_range.push_back(int_range);
-
-        nh_->declare_parameter<int64_t>(PARAM_NAMESPACE + feature_name, initial_value, descriptor);
-        break;
-      }
-      case VmbFeatureDataFloat: {
-        double initial_value = 0.0;
-        double minimum_value = std::numeric_limits<double>::lowest();
-        double maximum_value = std::numeric_limits<double>::max();
-        double step = 0.0;
-
-        feature->GetValue(initial_value);
-        feature->GetRange(minimum_value, maximum_value);
-        feature->GetIncrement(step);
-        
-        initial_value = std::max(maximum_value, std::min(initial_value, minimum_value));
-
-        rcl_interfaces::msg::FloatingPointRange float_range;
-        float_range.from_value = minimum_value;
-        float_range.to_value = maximum_value;
-        // TODO: step is not working when feature is set to Continuous
-        // float_range.step = step;
-
-        descriptor.floating_point_range.push_back(float_range);
-        
-        nh_->declare_parameter<double>(PARAM_NAMESPACE + feature_name, initial_value, descriptor);
-        break;
-      }
-      case VmbFeatureDataString: {
-        std::string initial_value = "";
-
-        feature->GetValue(initial_value);
-
-        nh_->declare_parameter<std::string>(PARAM_NAMESPACE + feature_name, initial_value, descriptor);
-        break;
-      }
-      case VmbFeatureDataEnum: {
-        std::string initial_value = "";
-        EnumEntryVector enum_entries;
-
-        feature->GetValue(initial_value);
-
-        if (feature->GetEntries(enum_entries) == VmbErrorSuccess)
-        {
-          std::string enum_description = "Acceptable values: ";
-          bool first = true;
-          for (const auto& entry : enum_entries)
-          {
-            std::string entry_name;
-            if (entry.GetName(entry_name) == VmbErrorSuccess)
-            {
-              entry_name = first ? entry_name : ", " + entry_name;
-              enum_description += entry_name;
-              first = false;
-            }
-          }
-          descriptor.additional_constraints = enum_description;
-        }
-
-        nh_->declare_parameter<std::string>(PARAM_NAMESPACE + feature_name, initial_value, descriptor);
-        break;
-      }
-      default: {
-        break;
-      }
-    }
-  }
-  return true;
-}
-
-rcl_interfaces::msg::SetParametersResult
-AvtVimbaCamera::parameterCallback(const std::vector<rclcpp::Parameter>& parameters)
-{
-  rcl_interfaces::msg::SetParametersResult result;
-  result.successful = true;
-  result.reason = "success";
-
-  for (const auto& param : parameters)
-  {
-    std::string param_name = param.get_name();
-    std::string feature_name = param_name.substr(param_name.find('/') + 1, std::string::npos);
-
-    if (writable_features_.count(feature_name))
-    {
-      if (writable_features_[feature_name])
+      err = feature->IsWritable(is_writable);
+      if (err != VmbErrorSuccess)
       {
+        spdlog::get("console")->error("[Could not get write access. Error code: {}]", err);
+        return false;
+      }
+      writable_features_[feature_name] = is_writable;
 
-        // Stop imaging since parameter changes can affect the image frames being received
-        if (streaming_ && !on_init_config_)
-        {
-          stopImaging();
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-
-        std::unique_lock<std::mutex> lock(config_mutex_);
-        rclcpp::ParameterType param_type = param.get_type();
-
-        switch (param_type)
-        {
-          case rclcpp::PARAMETER_BOOL: {
-            bool value;
-            configureFeature(feature_name, param.get_value<bool>(), value);
-            break;
-          }
-          case rclcpp::PARAMETER_INTEGER: {
-            int64_t value;
-            configureFeature(feature_name, static_cast<VmbInt64_t>(param.get_value<int64_t>()), value);
-            break;
-          }
-          case rclcpp::PARAMETER_DOUBLE: {
-            double value;
-            configureFeature(feature_name, param.get_value<double>(), value);
-            break;
-          }
-          case rclcpp::PARAMETER_STRING: {
-            std::string value;
-            configureFeature(feature_name, param.get_value<std::string>(), value);
-            break;
-          }
-          default:
-            break;
-        }
-
-        // Update camera_info if certain features changed
-        if (cam_info_features_.count(feature_name) && !on_init_config_)
-        {
-          updateCameraInfo();
-        }
-
-        if (!(on_init_config_ || force_stopped_))
-        {
-          startImaging();
-        }
+      VmbFeatureDataType type;
+      err = feature->GetDataType(type);
+      if (err != VmbErrorSuccess)
+      {
+        spdlog::get("console")->error("[Could not get feature Data Type. Error code: {}]", err);
+        return false;
       }
       else
       {
-        if (!on_init_config_)
+        switch (type)
         {
-          result.reason = "Parameter " + param_name + " is a read-only camera feature";
-          result.successful = false;
+          case VmbFeatureDataBool: {
+            configureFeature(feature_name, params[PARAM_NAMESPACE + feature_name].as<bool>());
+            break;
+          }
+          case VmbFeatureDataInt: {
+            configureFeature(feature_name, params[PARAM_NAMESPACE + feature_name].as<int>());
+            break;
+          }
+          case VmbFeatureDataFloat: {
+            configureFeature(feature_name, params[PARAM_NAMESPACE + feature_name].as<double>());
+            break;
+          }
+          case VmbFeatureDataString: {
+            configureFeature(feature_name, params[PARAM_NAMESPACE + feature_name].as<std::string>());
+            break;
+          }
+          case VmbFeatureDataEnum: {
+            configureFeature(feature_name, params[PARAM_NAMESPACE + feature_name].as<std::string>());
+            break;
+          }
+          default: {
+            break;
+          }
         }
       }
     }
   }
-
-  return result;
-}
-
-void AvtVimbaCamera::updateCameraInfo()
-{
-  sensor_msgs::msg::CameraInfo ci = info_man_->getCameraInfo();
-
-  // Set the operational parameters in CameraInfo (binning, ROI)
-  int binning_or_decimation_x = getBinningOrDecimationX();
-  int binning_or_decimation_y = getBinningOrDecimationY();
-
-  // Set the operational parameters in CameraInfo (binning, ROI)
-  int sensor_width = getSensorWidth();
-  int sensor_height = getSensorHeight();
-
-  if (sensor_width == -1 || sensor_height == -1)
+  else
   {
-    RCLCPP_ERROR(nh_->get_logger(), "Could not determine sensor pixel dimensions, camera_info will be wrong");
+    spdlog::get("console")->error("Could not get features. Error code: {}", api_.errorCodeToMessage(err));
+    return false;
   }
-
-  ci.width = sensor_width;
-  ci.height = sensor_height;
-  ci.binning_x = binning_or_decimation_x;
-  ci.binning_y = binning_or_decimation_y;
-
-  // ROI is in unbinned coordinates, need to scale up
-  ci.roi.width = getImageWidth() * binning_or_decimation_x;
-  ci.roi.height = getImageHeight() * binning_or_decimation_y;
-  ci.roi.x_offset = 0 * binning_or_decimation_x;
-  ci.roi.y_offset = 0 * binning_or_decimation_y;
-
-  bool roi_is_full_image = (ci.roi.width == ci.width && ci.roi.height == ci.height);
-  ci.roi.do_rectify = !roi_is_full_image;
-
-  // push the changes to manager
-  info_man_->setCameraInfo(ci);
-
-  RCLCPP_INFO(nh_->get_logger(), "Camera info updated");
-}
-
-void AvtVimbaCamera::getCurrentState(diagnostic_updater::DiagnosticStatusWrapper& stat)
-{
-  stat.add("ID", guid_);
-  stat.add("Info", diagnostic_msg_);
-  stat.add("Temperature", getDeviceTemp());
-
-  switch (camera_state_)
-  {
-    case OPENING:
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Opening camera");
-      break;
-    case IDLE:
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Camera is idle");
-      break;
-    case OK:
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Camera is streaming");
-      break;
-    case CAMERA_NOT_FOUND:
-      stat.summaryf(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Cannot find requested camera %s", guid_.c_str());
-      break;
-    case FORMAT_ERROR:
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Problem retrieving frame");
-      break;
-    case ERROR:
-      stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Camera has encountered an error");
-      break;
-    default:
-      break;
-  }
+  return true;
 }
 
 bool AvtVimbaCamera::loadCameraSettings(const std::string& filename)
@@ -1025,10 +716,10 @@ bool AvtVimbaCamera::loadCameraSettings(const std::string& filename)
 
   if (err != VmbErrorSuccess)
   {
-    RCLCPP_ERROR(nh_->get_logger(), "Failed to load camera settings from %s", filename.c_str());
+    spdlog::get("console")->error("Failed to load camera settings from {}", filename);
     return false;
   }
-  RCLCPP_INFO(nh_->get_logger(), "Loaded camera settings from %s", filename.c_str());
+  spdlog::get("console")->info("Loaded camera settings from {}", filename);
   return true;
 }
 
@@ -1045,10 +736,10 @@ bool AvtVimbaCamera::saveCameraSettings(const std::string& filename)
 
   if (err != VmbErrorSuccess)
   {
-    RCLCPP_ERROR(nh_->get_logger(), "Failed to save camera settings to %s", filename.c_str());
+    spdlog::get("console")->error("Failed to save camera settings to {}", filename);
     return false;
   }
-  RCLCPP_INFO(nh_->get_logger(), "Saved camera settings to %s", filename.c_str());
+  spdlog::get("console")->info("Saved camera settings to {}", filename);
   return true;
 }
 

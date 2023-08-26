@@ -34,14 +34,14 @@
 #define AVT_VIMBA_API_H
 
 #include <VimbaCPP/Include/VimbaCPP.h>
-
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/image_encodings.hpp>
-#include <sensor_msgs/fill_image.hpp>
+#include <spdlog/spdlog.h>
+#include <sensor_msgs/msg/ImagePlugin.hpp>
+#include <opencv2/opencv.hpp>
+#include "external/image_encodings.hpp"
 
 #include <string>
 #include <map>
+#include <memory>
 
 using AVT::VmbAPI::CameraPtr;
 using AVT::VmbAPI::FramePtr;
@@ -52,7 +52,7 @@ namespace avt_vimba_camera
 class AvtVimbaApi
 {
 public:
-  AvtVimbaApi(const rclcpp::Logger& logger) : vs(VimbaSystem::GetInstance()), logger_(logger)
+  AvtVimbaApi() : vs(VimbaSystem::GetInstance())
   {
   }
 
@@ -61,12 +61,12 @@ public:
     VmbErrorType err = vs.Startup();
     if (VmbErrorSuccess == err)
     {
-      RCLCPP_INFO_STREAM(logger_, "[Vimba System]: AVT Vimba System initialized successfully");
+      spdlog::get("console")->info("[Vimba System]: AVT Vimba System initialized successfully"); 
       listAvailableCameras();
     }
     else
     {
-      RCLCPP_ERROR_STREAM(logger_, "[Vimba System]: Could not start Vimba system: " << errorCodeToMessage(err));
+      spdlog::get("console")->error("[Vimba System]: Could not start Vimba system: {}", errorCodeToMessage(err));
     }
   }
 
@@ -141,7 +141,7 @@ public:
       return "Undefined access";
   }
 
-  bool frameToImage(const FramePtr vimba_frame_ptr, sensor_msgs::msg::Image& image)
+  bool frameToImage(const FramePtr vimba_frame_ptr, sensor_msgs::msg::dds_::Image_ &image)
   {
     VmbPixelFormatType pixel_format;
     VmbUint32_t width, height, nSize;
@@ -220,32 +220,44 @@ public:
     else if (pixel_format == VmbPixelFormatRgb16)
       encoding = sensor_msgs::image_encodings::TYPE_16UC3;
     else
-      RCLCPP_WARN(logger_, "Received frame with unsupported pixel format %d", pixel_format);
+      spdlog::get("console")->warn("Received frame with unsupported pixel format {}", pixel_format);
     if (encoding == "")
       return false;
 
     VmbUchar_t* buffer_ptr;
     VmbErrorType err = vimba_frame_ptr->GetImage(buffer_ptr);
     bool res = false;
+    size_t nBytes = 0;
     if (VmbErrorSuccess == err)
     {
-      res = sensor_msgs::fillImage(image, encoding, height, width, step, buffer_ptr);
+      image.encoding("rgb8"); // something smarter later. Used to be encoding
+      const cv::Mat m(height, width, CV_8UC1, static_cast<uint8_t*>(buffer_ptr), step);
+      image.width(width);
+      image.height(height);
+      image.step(step * 3);
+      nBytes = height * width * 3;
+      image.data().resize(nBytes);
+      cv::Mat output_mat(height, width, CV_8UC3,
+          static_cast<uint8_t*>(image.data().data()), image.step());
+      cv::ColorConversionCodes code = cv::COLOR_BayerBG2RGB;
+      cv::demosaicing(m, output_mat, code);
+      // std::memcpy(&image.data().front() , buffer_ptr, nBytes);
+      image.is_bigendian(0);
+      res = true;
     }
     else
     {
-      RCLCPP_ERROR_STREAM(logger_, "Could not GetImage. "
-                                       << "\n Error: " << errorCodeToMessage(err));
+      spdlog::get("console")->error("Could not GetImage. Error: {} ", errorCodeToMessage(err));
     }
     return res;
   }
 
 private:
   VimbaSystem& vs;
-  rclcpp::Logger logger_;
 
   void listAvailableCameras()
   {
-    RCLCPP_INFO(logger_, "Searching for cameras ...");
+    spdlog::get("console")->info("Searching for cameras ...");
     CameraPtrVector cameras;
     if (VmbErrorSuccess == vs.Startup())
     {
@@ -264,62 +276,62 @@ private:
           VmbErrorType err = camera->GetID(strID);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get camera ID. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get camera ID. Error code: {}]", err);
           }
 
           err = camera->GetName(strName);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get camera name. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get camera name. Error code: {}]", err);
           }
 
           err = camera->GetModel(strModelname);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get camera mode name. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get camera mode name. Error code: {}]", err);
           }
 
           err = camera->GetSerialNumber(strSerialNumber);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get camera serial number. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get camera serial number. Error code: {}]", err);
           }
 
           err = camera->GetInterfaceID(strInterfaceID);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get interface ID. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get interface ID. Error code: {}]", err);
           }
 
           err = camera->GetInterfaceType(interfaceType);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get interface type. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get interface type. Error code: {}]", err);
           }
 
           err = camera->GetPermittedAccess(accessType);
           if (VmbErrorSuccess != err)
           {
-            RCLCPP_ERROR_STREAM(logger_, "[Could not get access type. Error code: " << err << "]");
+            spdlog::get("console")->error("[Could not get access type. Error code: {}]", err);
           }
 
-          RCLCPP_INFO_STREAM(logger_, "Found camera named " << strName << ":");
-          RCLCPP_INFO_STREAM(logger_, " - Model Name     : " << strModelname);
-          RCLCPP_INFO_STREAM(logger_, " - Camera ID      : " << strID);
-          RCLCPP_INFO_STREAM(logger_, " - Serial Number  : " << strSerialNumber);
-          RCLCPP_INFO_STREAM(logger_, " - Interface ID   : " << strInterfaceID);
-          RCLCPP_INFO_STREAM(logger_, " - Interface type : " << interfaceToString(interfaceType));
-          RCLCPP_INFO_STREAM(logger_, " - Access type    : " << accessModeToString(accessType));
+          spdlog::get("console")->info("Found camera named {}:", strName);
+          spdlog::get("console")->info(" - Model Name     : {}", strModelname);
+          spdlog::get("console")->info(" - Camera ID      : {}", strID);
+          spdlog::get("console")->info(" - Serial Number  : {}", strSerialNumber);
+          spdlog::get("console")->info(" - Interface ID   : {}", strInterfaceID);
+          spdlog::get("console")->info(" - Interface type : {}", interfaceToString(interfaceType));
+          spdlog::get("console")->info(" - Access type    : {}", accessModeToString(accessType));
         }
       }
       else
       {
-        RCLCPP_WARN(logger_, "Could not get cameras from Vimba System");
+        spdlog::get("console")->warn( "Could not get cameras from Vimba System");
       }
     }
     else
     {
-      RCLCPP_WARN(logger_, "Could not start Vimba System");
+      spdlog::get("console")->warn("Could not start Vimba System");
     }
   }
 };

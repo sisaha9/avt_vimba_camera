@@ -33,46 +33,41 @@
 #include <thread>
 
 #include <avt_vimba_camera/mono_camera_node.hpp>
-#include <avt_vimba_camera_msgs/srv/load_settings.hpp>
-#include <avt_vimba_camera_msgs/srv/save_settings.hpp>
+
+#include "spdlog/sinks/stdout_color_sinks.h"
 
 using namespace std::placeholders;
 
 namespace avt_vimba_camera
 {
-MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
+MonoCameraNode::MonoCameraNode(size_t domain_id, const std::string &param_fp) : api_(), cam_(), participant_(dds::core::null), data_topic_(dds::core::null), data_wr_(dds::core::null)
 {
-  // Set the image publisher before streaming
-  camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image", rmw_qos_profile_system_default);
-
   // Set the frame callback
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
-
-  start_srv_ = create_service<std_srvs::srv::Trigger>("~/start_stream", std::bind(&MonoCameraNode::startSrvCallback, this, _1, _2, _3));
-  stop_srv_ = create_service<std_srvs::srv::Trigger>("~/stop_stream", std::bind(&MonoCameraNode::stopSrvCallback, this, _1, _2, _3));
-
-  load_srv_ = create_service<avt_vimba_camera_msgs::srv::LoadSettings>("~/load_settings", std::bind(&MonoCameraNode::loadSrvCallback, this, _1, _2, _3));
-  save_srv_ = create_service<avt_vimba_camera_msgs::srv::SaveSettings>("~/save_settings", std::bind(&MonoCameraNode::saveSrvCallback, this, _1, _2, _3));
-
-  loadParams();
+  console_ = spdlog::stdout_color_mt("console");
+  loadParams(param_fp);
+  participant_ = dds::domain::DomainParticipant(domain_id);
+  dds::pub::qos::DataWriterQos writer_qos;
+  writer_qos << dds::core::policy::Reliability::BestEffort();
+  data_topic_ = dds::topic::Topic<sensor_msgs::msg::dds_::Image_>(participant_, "rt/" + frame_id_ + "/image");
+  data_wr_ = dds::pub::DataWriter<sensor_msgs::msg::dds_::Image_>(dds::pub::Publisher(participant_), data_topic_, writer_qos);
 }
 
 MonoCameraNode::~MonoCameraNode()
 {
   cam_.stop();
-  camera_info_pub_.shutdown();
 }
 
-void MonoCameraNode::loadParams()
+void MonoCameraNode::loadParams(const std::string &param_fp)
 {
-  ip_ = this->declare_parameter("ip", "");
-  guid_ = this->declare_parameter("guid", "");
-  camera_info_url_ = this->declare_parameter("camera_info_url", "");
-  frame_id_ = this->declare_parameter("frame_id", "");
-  use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
-  ptp_offset_ = this->declare_parameter("ptp_offset", 0);
-
-  RCLCPP_INFO(this->get_logger(), "Parameters loaded");
+  allparms_ = YAML::LoadFile(param_fp);
+  ip_ = allparms_["ip"].as<std::string>();
+  guid_ = allparms_["guid"].as<std::string>();
+  // camera_info_url_ = allparms_["camera_info_url"].as<std::string>();
+  frame_id_ = allparms_["frame_id"].as<std::string>();
+  use_measurement_time_ = allparms_["use_measurement_time"].as<bool>();
+  ptp_offset_ = allparms_["ptp_offset"].as<int>();
+  spdlog::get("console")->info("Loading parameters from file: {}");
 }
 
 void MonoCameraNode::start()
@@ -87,94 +82,35 @@ void MonoCameraNode::start()
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
-  rclcpp::Time ros_time = this->get_clock()->now();
+  timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
 
-  // getNumSubscribers() is not yet supported in Foxy, will be supported in later versions
+  // need to see if there is an RTI equivalent
+  // Need to add back something to do with camera info
   // if (camera_info_pub_.getNumSubscribers() > 0)
   {
-    sensor_msgs::msg::Image img;
+    sensor_msgs::msg::dds_::Image_ img;
     if (api_.frameToImage(vimba_frame_ptr, img))
     {
-      sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
-      // Note: getCameraInfo() doesn't fill in header frame_id or stamp
-      ci.header.frame_id = frame_id_;
       if (use_measurement_time_)
       {
         VmbUint64_t frame_timestamp;
         vimba_frame_ptr->GetTimestamp(frame_timestamp);
-        ci.header.stamp = rclcpp::Time(cam_.getTimestampRealTime(frame_timestamp)) + rclcpp::Duration(ptp_offset_, 0);
+        img.header().stamp().sec(cam_.getTimestampRealTime(frame_timestamp) + ptp_offset_);
       }
       else
       {
-        ci.header.stamp = ros_time;
+        img.header().stamp().nanosec(ts.tv_nsec);
+        img.header().stamp().sec((int32_t)ts.tv_sec);
       }
-      img.header.frame_id = ci.header.frame_id;
-      img.header.stamp = ci.header.stamp;
-      camera_info_pub_.publish(img, ci);
+
+      img.header().frame_id(frame_id_);
+      data_wr_.write(img);
     }
     else
     {
-      RCLCPP_WARN_STREAM(this->get_logger(), "Function frameToImage returned 0. No image published.");
+      spdlog::get("console")->warn("Function frameToImage returned 0. No image published.");
     }
-  }
-}
-
-void MonoCameraNode::startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
-                                      const std_srvs::srv::Trigger::Request::SharedPtr req,
-                                      std_srvs::srv::Trigger::Response::SharedPtr res) {
-  (void)request_header;
-  (void)req;
-
-  cam_.startImaging();
-  cam_.setForceStop(false);
-  auto state = cam_.getCameraState();
-  res->success = state != CameraState::ERROR;
-}
-
-void MonoCameraNode::stopSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
-                                     const std_srvs::srv::Trigger::Request::SharedPtr req,
-                                     std_srvs::srv::Trigger::Response::SharedPtr res)
-{
-  (void)request_header;
-  (void)req;
-
-  cam_.stopImaging();
-  cam_.setForceStop(true);
-  auto state = cam_.getCameraState();
-  res->success = state != CameraState::ERROR;
-}
-
-void MonoCameraNode::loadSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
-                                     const avt_vimba_camera_msgs::srv::LoadSettings::Request::SharedPtr req,
-                                     avt_vimba_camera_msgs::srv::LoadSettings::Response::SharedPtr res) 
-{
-  (void)request_header;
-  auto extension = req->input_path.substr(req->input_path.find_last_of(".") + 1);
-  if (extension != "xml")
-  {
-    RCLCPP_WARN(this->get_logger(), "Invalid file extension. Only .xml is supported.");
-    res->result = false;
-  } 
-  else 
-  {
-    res->result = cam_.loadCameraSettings(req->input_path);
-  }
-}
-
-void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
-                                     const avt_vimba_camera_msgs::srv::SaveSettings::Request::SharedPtr req,
-                                     avt_vimba_camera_msgs::srv::SaveSettings::Response::SharedPtr res) 
-{
-  (void)request_header;
-  auto extension = req->output_path.substr(req->output_path.find_last_of(".") + 1);
-  if (extension != "xml")
-  {
-    RCLCPP_WARN(this->get_logger(), "Invalid file extension. Only .xml is supported.");
-    res->result = false;
-  } 
-  else 
-  {
-    res->result = cam_.saveCameraSettings(req->output_path);
   }
 }
 }  // namespace avt_vimba_camera
