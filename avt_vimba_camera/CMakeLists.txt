@@ -113,13 +113,3 @@ elseif("${ARCH}" STREQUAL armv8)
     DESTINATION lib
   )
 endif()
-
-# install(FILES ../README.md
-#   DESTINATION share/${PROJECT_NAME}/
-# )
-
-# ament_auto_package(INSTALL_TO_SHARE
-#   calibrations
-#   config
-#   launch
-# )

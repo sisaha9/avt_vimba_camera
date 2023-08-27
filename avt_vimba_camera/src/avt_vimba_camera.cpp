@@ -633,10 +633,12 @@ bool AvtVimbaCamera::setParams(const YAML::Node& params)
   FeaturePtrVector features;
   VmbErrorType err;
   err = vimba_camera_ptr_->GetFeatures(features);
+  bool res = true;
   if (err == VmbErrorSuccess)
   {
     on_init_config_ = true;
     spdlog::get("console")->info("Configuring camera:");
+    spdlog::get("console")->info(" - {} features found", features.size());
     // Query all camera features to translate into params
     for (const FeaturePtr feature : features)
     {
@@ -646,23 +648,28 @@ bool AvtVimbaCamera::setParams(const YAML::Node& params)
       if (err != VmbErrorSuccess)
       {
         spdlog::get("console")->error("[Could not get feature Name. Error code: {}]", err);
-        return false;
+        res = false;
+        continue;
       }
 
       err = feature->IsWritable(is_writable);
       if (err != VmbErrorSuccess)
       {
         spdlog::get("console")->error("[Could not get write access. Error code: {}]", err);
-        return false;
       }
       writable_features_[feature_name] = is_writable;
-
+      spdlog::get("console")->info(" - {} is writable: {}", feature_name, is_writable);
       VmbFeatureDataType type;
       err = feature->GetDataType(type);
       if (err != VmbErrorSuccess)
       {
         spdlog::get("console")->error("[Could not get feature Data Type. Error code: {}]", err);
-        return false;
+        res = false;
+        continue;
+      }
+      if (!params[PARAM_NAMESPACE + feature_name])
+      {
+        spdlog::get("console")->warn("Feature {} not found in params", feature_name);
       }
       else
       {
@@ -692,15 +699,16 @@ bool AvtVimbaCamera::setParams(const YAML::Node& params)
             break;
           }
         }
+        spdlog::get("console")->info(" - {} set to {}", feature_name, params[PARAM_NAMESPACE + feature_name]);
       }
     }
   }
   else
   {
     spdlog::get("console")->error("Could not get features. Error code: {}", api_.errorCodeToMessage(err));
-    return false;
+    res = false;
   }
-  return true;
+  return res;
 }
 
 bool AvtVimbaCamera::loadCameraSettings(const std::string& filename)
@@ -717,7 +725,6 @@ bool AvtVimbaCamera::loadCameraSettings(const std::string& filename)
   if (err != VmbErrorSuccess)
   {
     spdlog::get("console")->error("Failed to load camera settings from {}", filename);
-    return false;
   }
   spdlog::get("console")->info("Loaded camera settings from {}", filename);
   return true;

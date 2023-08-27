@@ -77,6 +77,7 @@ void MonoCameraNode::start()
 
   // Start camera
   cam_.start(ip_, guid_, frame_id_, camera_info_url_);
+  cam_.setParams(allparms_);
   cam_.startImaging();
 }
 
