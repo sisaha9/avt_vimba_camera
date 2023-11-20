@@ -9,33 +9,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+find_package(ament_cmake_auto REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(Backward REQUIRED)
 find_package(OpenCV REQUIRED)
 
-if(DEFINED ENV{NDDSHOME})
-  set(NDDSHOME $ENV{NDDSHOME})
-else()
-  message(FATAL_ERROR "NDDSHOME (env var) is not set")
-endif()
-
-if(DEFINED ENV{ROS_DATA_TYPES_DIR})
-  set(ROS_DATA_TYPES_DIR $ENV{ROS_DATA_TYPES_DIR})
-else()
-  message(FATAL_ERROR "ROS_DATA_TYPES_DIR (env var) is not set")
-endif()
-
-set(CMAKE_MODULE_PATH ${NDDSHOME}/resource/cmake)
-
-find_package(RTIConnextDDS EXACT "6.1.1" REQUIRED)
-
-find_library(ROS_IDL_LIBRARY NAMES RosDataTypes HINTS "${ROS_DATA_TYPES_DIR}/build")
-
-include_directories(
-    ${ROS_DATA_TYPES_DIR}/build 
-    ${CONNEXTDDS_INCLUDE_DIRS}
-)
+ament_auto_find_build_dependencies()
 
 # Get architecture
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH};${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -72,7 +52,7 @@ function(add_dependencies_and_linkings arg)
 endfunction(add_dependencies_and_linkings)
 
 # Nodes
-add_library(mono_camera_node SHARED
+ament_auto_add_library(mono_camera_node SHARED
   src/mono_camera_node.cpp
   src/avt_vimba_camera.cpp
   src/frame_observer.cpp
@@ -80,15 +60,15 @@ add_library(mono_camera_node SHARED
 
 add_dependencies_and_linkings(mono_camera_node)
 
-target_link_libraries(mono_camera_node RTIConnextDDS::cpp2_api ${ROS_IDL_LIBRARY} spdlog::spdlog yaml-cpp ${OpenCV_LIBS})
+target_link_libraries(mono_camera_node spdlog::spdlog yaml-cpp ${OpenCV_LIBS})
 
 # Executables
 
-add_executable(mono_camera_node_exec
+ament_auto_add_executable(mono_camera_exec
   src/exec/mono_camera_exec.cpp
 )
 
-target_link_libraries(mono_camera_node_exec mono_camera_node Backward::Backward)
+target_link_libraries(mono_camera_exec mono_camera_node Backward::Backward)
 
 #############
 ## Install ##
@@ -113,3 +93,5 @@ elseif("${ARCH}" STREQUAL armv8)
     DESTINATION lib
   )
 endif()
+
+ament_auto_package()

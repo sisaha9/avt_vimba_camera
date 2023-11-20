@@ -36,11 +36,9 @@
 #include <string>
 #include <memory>
 
-#include <dds/pub/ddspub.hpp>
-#include <dds/core/ddscore.hpp>
-#include <dds/domain/ddsdomain.hpp> 
 
-#include <sensor_msgs/msg/ImagePlugin.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <spdlog/logger.h>
 #include <yaml-cpp/yaml.h>
 
@@ -50,10 +48,10 @@
 
 namespace avt_vimba_camera
 {
-class MonoCameraNode
+class MonoCameraNode : public rclcpp::Node
 {
 public:
-  explicit MonoCameraNode(size_t domain_id, const std::string &param_fp);
+  explicit MonoCameraNode(const rclcpp::NodeOptions & options, const std::string &param_fp);
   ~MonoCameraNode();
   void start();
 
@@ -68,9 +66,7 @@ private:
   bool use_measurement_time_;
   int32_t ptp_offset_;
 
-  dds::domain::DomainParticipant participant_;
-  dds::topic::Topic<sensor_msgs::msg::dds_::Image_> data_topic_;
-  dds::pub::DataWriter<sensor_msgs::msg::dds_::Image_> data_wr_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
 
   std::shared_ptr<spdlog::logger> console_;
   YAML::Node allparms_;

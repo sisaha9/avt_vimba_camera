@@ -699,7 +699,7 @@ bool AvtVimbaCamera::setParams(const YAML::Node& params)
             break;
           }
         }
-        spdlog::get("console")->info(" - {} set to {}", feature_name, params[PARAM_NAMESPACE + feature_name]);
+        // spdlog::get("console")->info(" - {} set to {}", feature_name, params[PARAM_NAMESPACE + feature_name]);
       }
     }
   }

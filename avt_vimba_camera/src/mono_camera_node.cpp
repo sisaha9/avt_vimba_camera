@@ -40,17 +40,13 @@ using namespace std::placeholders;
 
 namespace avt_vimba_camera
 {
-MonoCameraNode::MonoCameraNode(size_t domain_id, const std::string &param_fp) : api_(), cam_(), participant_(dds::core::null), data_topic_(dds::core::null), data_wr_(dds::core::null)
+MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options, const std::string &param_fp) : rclcpp::Node("mono_camera_node", options), api_(), cam_()
 {
   // Set the frame callback
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
   console_ = spdlog::stdout_color_mt("console");
   loadParams(param_fp);
-  participant_ = dds::domain::DomainParticipant(domain_id);
-  dds::pub::qos::DataWriterQos writer_qos;
-  writer_qos << dds::core::policy::Reliability::BestEffort();
-  data_topic_ = dds::topic::Topic<sensor_msgs::msg::dds_::Image_>(participant_, "rt/" + frame_id_ + "/image");
-  data_wr_ = dds::pub::DataWriter<sensor_msgs::msg::dds_::Image_>(dds::pub::Publisher(participant_), data_topic_, writer_qos);
+  image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/" + frame_id_ + "/image", rclcpp::SensorDataQoS());
 }
 
 MonoCameraNode::~MonoCameraNode()
@@ -83,30 +79,27 @@ void MonoCameraNode::start()
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
-  timespec ts;
-  clock_gettime(CLOCK_REALTIME, &ts);
 
   // need to see if there is an RTI equivalent
   // Need to add back something to do with camera info
   // if (camera_info_pub_.getNumSubscribers() > 0)
   {
-    sensor_msgs::msg::dds_::Image_ img;
+    sensor_msgs::msg::Image img;
     if (api_.frameToImage(vimba_frame_ptr, img))
     {
       if (use_measurement_time_)
       {
         VmbUint64_t frame_timestamp;
         vimba_frame_ptr->GetTimestamp(frame_timestamp);
-        img.header().stamp().sec(cam_.getTimestampRealTime(frame_timestamp) + ptp_offset_);
+        img.header.stamp.sec = cam_.getTimestampRealTime(frame_timestamp) + ptp_offset_;
       }
       else
       {
-        img.header().stamp().nanosec(ts.tv_nsec);
-        img.header().stamp().sec((int32_t)ts.tv_sec);
+        img.header.stamp = now();
       }
 
-      img.header().frame_id(frame_id_);
-      data_wr_.write(img);
+      img.header.frame_id = frame_id_;
+      image_pub_->publish(img);
     }
     else
     {

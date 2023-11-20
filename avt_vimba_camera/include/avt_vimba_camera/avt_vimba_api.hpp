@@ -35,7 +35,7 @@
 
 #include <VimbaCPP/Include/VimbaCPP.h>
 #include <spdlog/spdlog.h>
-#include <sensor_msgs/msg/ImagePlugin.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <opencv2/opencv.hpp>
 #include "external/image_encodings.hpp"
 
@@ -141,7 +141,7 @@ public:
       return "Undefined access";
   }
 
-  bool frameToImage(const FramePtr vimba_frame_ptr, sensor_msgs::msg::dds_::Image_ &image)
+  bool frameToImage(const FramePtr vimba_frame_ptr, sensor_msgs::msg::Image &image)
   {
     VmbPixelFormatType pixel_format;
     VmbUint32_t width, height, nSize;
@@ -230,19 +230,19 @@ public:
     size_t nBytes = 0;
     if (VmbErrorSuccess == err)
     {
-      image.encoding("rgb8"); // something smarter later. Used to be encoding
+      image.encoding = "rgb8"; // something smarter later. Used to be encoding
       const cv::Mat m(height, width, CV_8UC1, static_cast<uint8_t*>(buffer_ptr), step);
-      image.width(width);
-      image.height(height);
-      image.step(step * 3);
+      image.width = width;
+      image.height = height;
+      image.step = step * 3;
       nBytes = height * width * 3;
-      image.data().resize(nBytes);
+      image.data.resize(nBytes);
       cv::Mat output_mat(height, width, CV_8UC3,
-          static_cast<uint8_t*>(image.data().data()), image.step());
+          static_cast<uint8_t*>(image.data.data()), image.step);
       cv::ColorConversionCodes code = cv::COLOR_BayerBG2RGB;
       cv::demosaicing(m, output_mat, code);
       // std::memcpy(&image.data().front() , buffer_ptr, nBytes);
-      image.is_bigendian(0);
+      image.is_bigendian = 0;
       res = true;
     }
     else

@@ -1,24 +1,21 @@
 #include "avt_vimba_camera/mono_camera_node.hpp"
-#include <rti/util/util.hpp>
 
 #include <memory>
 
-void start_infinite_loop()
-{
-  for (size_t i = 0; 1; i++) {
-    rti::util::sleep(dds::core::Duration(0, 10000000));
-  }
-}
-
 int main(int argc, char** argv)
 {
-  if (argc >= 3) {
-    size_t domain_id = atoi(argv[1]);
-    std::string yaml_fp = argv[2];
-    std::shared_ptr<avt_vimba_camera::MonoCameraNode> node = std::make_shared<avt_vimba_camera::MonoCameraNode>(domain_id, yaml_fp);
-    node->start();
-    start_infinite_loop();
-    return 0;
-  }
-  return -1;
+  rclcpp::init(argc, argv);
+  std::string yaml_fp = "/home/autera-admin/ART/race_common/src/external/drivers/vimba_driver/avt_vimba_camera/config/test_params.yaml";
+  rclcpp::NodeOptions options{};
+  options.use_global_arguments(false);
+  options.enable_rosout(false);
+  options.enable_topic_statistics(false);
+  options.start_parameter_services(false);
+  options.start_parameter_event_publisher(false);
+  options.enable_logger_service(false);
+  options.append_parameter_override("start_type_description_service", false);
+  std::shared_ptr<avt_vimba_camera::MonoCameraNode> node = std::make_shared<avt_vimba_camera::MonoCameraNode>(options, yaml_fp);
+  node->start();
+  rclcpp::spin(node);
+  return 0;
 }

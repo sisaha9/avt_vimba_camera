@@ -1,10 +1,10 @@
 name: camera
-frame_id: "vimba_front_right_center"
-ip: '10.42.7.52'
+frame_id: "vimba_front_left_center"
+ip: '10.42.17.51'
 guid: ''
 use_measurement_time: false
 ptp_offset: 0
-publish_compressed: true
+publish_compressed: false
 feature/AcquisitionFrameCount: 1
 feature/AcquisitionFrameRateAbs: 20.0
 feature/AcquisitionMode: Continuous
@@ -81,12 +81,11 @@ feature/LUTMode: Luminance
 feature/LUTSelector: LUT1
 feature/LUTValue: 4095
 feature/MulticastEnable: false
-feature/MulticastIPAddress: 4026470193
 feature/OffsetX: 0
 feature/OffsetY: 0
 feature/PixelFormat: BayerRG8
 feature/PtpAcquisitionGateTime: 0
-feature/PtpMode: 'Slave'
+feature/PtpMode: 'Off'
 feature/RecorderPreEventCount: 0
 feature/ReverseX: false
 feature/ReverseY: false
